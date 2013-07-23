@@ -2,7 +2,45 @@
 //=============================================================================
 //Project Kurt's PhantomX Reactor Arm
 
-// NEEDS DESCRIPTION
+
+//=============================================================================
+//Armcontrol packet structure is as follows
+//
+// 255, XH, XL, YH, YL, ZH, ZL, WAH, WAL, WRH, WAL, GH, GL, DTIME, BUTTONS, EXT, CHECKSUM
+//
+// (please note, actual XYZ min/max for specific arm defined below)
+//
+// Protocol value ranges
+//
+// XH = high byte X-axis
+// XL = low byte, 0-1023 (-512 through +512 via ArmControl)
+//
+// YH = high byte Y-axis
+// YL = low byte, 0-1023
+//
+// ZH = high byte Z-axis
+// ZL = low byte, 0-1023 
+//
+// WAH = high byte (unused for now, placeholder for higher res wrist angle)
+// WAL = low byte, 0-180 (-90 through +90 via ArmControl)
+//
+// WRH = high byte 
+// WRL = low byte, 0-1023. 512 center
+//
+// GH = high byte
+// GL = low byte, 0-512. 256 center
+//
+// DTIME = byte. DTIME*16 = interpolation delta time
+//
+// Buttons = byte (not implemented)
+//
+// EXT = byte. Extended instruction set.
+// EXT < 16 = no action
+// EXT = 32 = 3D Cartesian IK
+// EXT = 48 = Cylindrical IK Xaxis = 0-4096 value, untested
+// EXT = 64 = BackHoe aka passthrough UNTESTED
+//
+// CHECKSUM = (unsigned char)(255 - (XH+XL+YH+YL+ZH+ZL+WAH+WAL+WRH+WRL+GH+GL+DTIME+BUTTONS+EXT)%256)
 
 
 //  This code is a Work In Progress and is distributed in the hope that it will be useful,
@@ -28,8 +66,8 @@
 #include <ax12.h>
 #include <BioloidController.h>
 #include <ArmControl.h>
-#include <Wire.h> 
-#include <LiquidCrystal_I2C.h>
+//#include <Wire.h> 
+//#include <LiquidCrystal_I2C.h>
 
 
 
@@ -39,8 +77,11 @@
 enum {
   SID_BASE=1, SID_RSHOULDER, SID_LSHOULDER, SID_RELBOW, SID_LELBOW, SID_WRIST, SID_WRISTROT, SID_GRIP};
 
+
 enum {
-  IKM_IK3D_CARTESIAN, IKM_CYLINDRICAL};
+  IKM_IK3D_CARTESIAN, IKM_CYLINDRICAL, IKM_BACKHOE};
+
+
 
 // status messages for IK return codes..
 enum {
@@ -103,7 +144,7 @@ enum {
 //=============================================================================
 ArmControl armcontrol = ArmControl();
 BioloidController bioloid = BioloidController(1000000);
-LiquidCrystal_I2C lcd(0x27,16,2);  // set the LCD address to 0x27 for a 16 chars and 2 line display
+//LiquidCrystal_I2C lcd(0x27,16,2);  // set the LCD address to 0x27 for a 16 chars and 2 line display
 
 //=============================================================================
 // Global Variables...
@@ -153,20 +194,21 @@ void setup() {
   pinMode(0,OUTPUT);  
   // Lets initialize the Commander
   Serial.begin(38400);
-  lcd.init();        
-  lcd.backlight();
-  lcd.print("Reactor Online.");  
-  delay(2000);
-  lcd.clear();
+  //  lcd.init();        
+  //  lcd.backlight();
+  //  lcd.print("Reactor Online.");  
+  //  delay(2000);
+  //  lcd.clear();
   Serial.println("Reactor Online.");
-  
+
   // Next initialize the Bioloid
   bioloid.poseSize = CNT_SERVOS;
 
   // Read in the current positions...
   bioloid.readPose();
-  // Start off to put arm to sleep...
+  delay(100);
 
+  // Start off to put arm to sleep...
 
   PutArmToSleep();
 
@@ -184,25 +226,75 @@ void setup() {
 //===================================================================================================
 void loop() {
   boolean fChanged = false;
-   
+
   if (armcontrol.ReadMsgs()) {
-  
+
     digitalWrite(0,HIGH-digitalRead(0));    
+
+    if(armcontrol.ext < 0x10){
+      // no action
+    }
+    switch (armcontrol.ext){
+    case 0x20:  //32
+      g_bIKMode = IKM_IK3D_CARTESIAN;   
+      MoveArmToHome(); 
+      break;
+    case 0x30:  //48
+      g_bIKMode = IKM_CYLINDRICAL;
+      MoveArmToHome(); 
+      break;    
+    case 0x40:  //64
+      g_bIKMode = IKM_BACKHOE;
+      MoveArmToHome(); 
+      break;
+    case 0x50:  //80
+      MoveArmToHome(); 
+      break;
+    case 0x60:  //96
+      PutArmToSleep();
+      break;
+    case 0x70:  //112
+      //do something
+      break;
+    case 0x80:  //128
+      //do something
+      break;        
+    case 0x90:  //144
+      //do something
+      break;
+    }
+
     // See if the Arm is active yet...
     if (g_fArmActive) {
-     
-      
+
+
       sBase = g_sBase;
       sShoulder = g_sShoulder;
       sElbow = g_sElbow; 
       sWrist = g_sWrist;
       sWristRot = g_sWristRot;      
       sGrip = g_sGrip;
-      
 
-// Call ProcessUserInput3D
 
-       fChanged |= ProcessUserInput3D();
+      // Call IKMode
+
+      //       fChanged |= ProcessUserInput3D();
+      switch (g_bIKMode) {
+      case IKM_IK3D_CARTESIAN:
+        fChanged |= ProcessUserInput3D();
+
+        break;
+      case IKM_CYLINDRICAL:
+        fChanged |= ProcessUserInputCylindrical();
+
+        break;
+
+      case IKM_BACKHOE:
+        fChanged |= ProcessUserInputBackHoe();
+        break;
+      }
+
+
 
 
       // If something changed and we are not in an error condition
@@ -215,10 +307,10 @@ void loop() {
     }
     else {
       g_fArmActive = true;
-//      MoveArmToHome();      
+      MoveArmToHome();      
     }
 
-//    buttonsPrev = armcontrol.buttons;
+    //    buttonsPrev = armcontrol.buttons;
     ulLastMsgTime = millis();    // remember when we last got a message...
   }
   else {
@@ -227,32 +319,22 @@ void loop() {
     }
     // error see if we exceeded a timeout
     if (g_fArmActive && ((millis() - ulLastMsgTime) > ARBOTIX_TO)) {
-      lcd.clear();
-      lcd.setCursor(0, 0);    
-      lcd.print("Good bye. :(");
+      //      lcd.clear();
+      //      lcd.setCursor(0, 0);    
+      //      lcd.print("Good bye. :(");
       PutArmToSleep();
-    
-    
+
+
     }
   }
 } 
-
-
-
-
-
-
-
-
-
-
 
 
 //===================================================================================================
 // ProcessUserInput3D: Process the Userinput when we are in 3d Mode
 //===================================================================================================
 boolean ProcessUserInput3D(void) {
-  
+
   // We Are in IK mode, so figure out what position we would like the Arm to move to.
   // We have the Coordinates system like:
   //
@@ -273,9 +355,9 @@ boolean ProcessUserInput3D(void) {
   // condition, don't allow the arm to move farther away...
 
   if (g_bIKStatus == IKS_SUCCESS) {
-    
-// Keep IK values within limits
-//
+
+    // Keep IK values within limits
+    //
     sIKX = min(max(armcontrol.Xaxis, IK_MIN_X), IK_MAX_X);    
     sIKY = min(max(armcontrol.Yaxis, IK_MIN_Y), IK_MAX_Y);    
     sIKZ = min(max(armcontrol.Zaxis, IK_MIN_Z), IK_MAX_Z);
@@ -283,7 +365,7 @@ boolean ProcessUserInput3D(void) {
     sWristRot = min(max(armcontrol.W_rot, WROT_MIN), WROT_MAX);
     sGrip = min(max(armcontrol.Grip, GRIP_MIN), GRIP_MAX);
     sDeltaTime = armcontrol.dtime*16;
-    
+
   }
 
   fChanged = (sIKX != g_sIKX) || (sIKY != g_sIKY) || (sIKZ != g_sIKZ) || (sIKGA != g_sIKGA) || (sWristRot != g_sWristRot) || (sGrip != g_sGrip);  
@@ -291,9 +373,8 @@ boolean ProcessUserInput3D(void) {
 
 
   if (fChanged) {
-    LCD(sIKX, sIKY, sIKZ, sIKGA, sWristRot, sDeltaTime);    
-    g_bIKStatus = doArmIK(true, sIKX, sIKY, sIKZ, sIKGA);
-    
+    //    LCD(sIKX, sIKY, sIKZ, sIKGA, sWristRot, sDeltaTime);    
+    g_bIKStatus = doArmIK(true, sIKX, sIKY, sIKZ, sIKGA); 
   }
   return fChanged;
 
@@ -301,12 +382,97 @@ boolean ProcessUserInput3D(void) {
 
 
 
+
+// updates needed here to compile
+//===================================================================================================
+// ProcessUserInputCylindrical: Process the Userinput when we are in 3d Mode
+//===================================================================================================
+boolean ProcessUserInputCylindrical() {
+  // We Are in IK mode, so figure out what position we would like the Arm to move to.
+  // We have the Coordinates system like:
+  //
+  //                y   Z
+  //                |  /
+  //                |/
+  //            ----+----X (X and Y are flat on ground, Z is up in air...
+  //                |
+  //                |
+  //
+  boolean fChanged = false;
+  int   sIKY;                  // Distance from base in mm
+  int   sIKZ;
+  int   sIKGA;
+
+  // Will try combination of the other two modes.  Will see if I need to do the Limits on the IK values
+  // or simply use the information from the Warning/Error from last call to the IK function...
+  sIKY = g_sIKY;
+  sIKZ = g_sIKZ;
+  sIKGA = g_sIKGA;
+
+  // The base rotate is real simple, just allow it to rotate in the min/max range...
+  sBase = min(max((armcontrol.Xaxis+512), BASE_MIN), BASE_MAX);
+
+  // Limit how far we can go by checking the status of the last move.  If we are in a warning or error
+  // condition, don't allow the arm to move farther away...
+  // Use Y for 2d distance from base
+  if ((g_bIKStatus == IKS_SUCCESS) || ((g_sIKY > 0) && (armcontrol.Yaxis < 0)) || ((g_sIKY < 0) && (armcontrol.Yaxis > 0)))
+    sIKY = min(max(armcontrol.Yaxis, IK_MIN_Y), IK_MAX_Y);
+
+  // Now Z coordinate...
+  if ((g_bIKStatus == IKS_SUCCESS) || ((g_sIKZ > 0) && (armcontrol.Zaxis < 0)) || ((g_sIKZ < 0) && (armcontrol.Zaxis > 0)))
+    sIKZ = min(max(armcontrol.Zaxis, IK_MIN_Z), IK_MAX_Z);
+
+  // And gripper angle.  May leave in Min/Max here for other reasons...   
+
+  if ((g_bIKStatus == IKS_SUCCESS) || ((g_sIKGA > 0) && (armcontrol.W_ang < 0)) || ((g_sIKGA < 0) && (armcontrol.W_ang > 0)))
+    sIKGA = min(max(armcontrol.W_ang, IK_MIN_GA), IK_MAX_GA);  // Currently in Servo coords...
+
+  sWristRot = min(max(armcontrol.W_rot, WROT_MIN), WROT_MAX);
+  sGrip = min(max(armcontrol.Grip, GRIP_MIN), GRIP_MAX);
+  sDeltaTime = armcontrol.dtime*16;
+
+  fChanged = (sBase != g_sBase) || (sIKY != g_sIKY) || (sIKZ != g_sIKZ) || (sIKGA != g_sIKGA) || (sWristRot != g_sWristRot) || (sGrip != g_sGrip);
+
+
+  if (fChanged) {
+    g_bIKStatus = doArmIK(false, sBase, sIKY, sIKZ, sIKGA);
+  }
+  return fChanged;
+}
+
+
+
+//===================================================================================================
+// ProcessUserInputBackHoe: Process the Userinput when we are in 3d Mode
+//===================================================================================================
+boolean ProcessUserInputBackHoe() {
+  // lets update positions with the 4 joystick values
+  // First the base
+  boolean fChanged = false;
+  sBase = min(max(armcontrol.Xaxis+512, BASE_MIN), BASE_MAX);
+  // Now the Boom
+  sShoulder = min(max(armcontrol.Yaxis, SHOULDER_MIN), SHOULDER_MAX);
+  // Now the Dipper 
+  sElbow = min(max(armcontrol.Zaxis, ELBOW_MIN), ELBOW_MAX);
+  // Bucket Curl
+  sWrist = min(max(armcontrol.W_ang, WRIST_MIN), WRIST_MAX);
+  sWristRot = min(max(armcontrol.W_rot, WROT_MIN), WROT_MAX);
+  sGrip = min(max(armcontrol.Grip, GRIP_MIN), GRIP_MAX);
+  sDeltaTime = armcontrol.dtime*16;
+
+  fChanged = (sBase != g_sBase) || (sShoulder != g_sShoulder) || (sElbow != g_sElbow) || (sWrist != g_sWrist) || (sWristRot != g_sWristRot) || (sGrip != g_sGrip);  
+  return fChanged;
+}
+
+
+
+
 //===================================================================================================
 // MoveArmToHome
 //===================================================================================================
 void MoveArmToHome(void) {
-    g_bIKStatus = doArmIK(true, 0, (2*ElbowLength)/3+WristLength, BaseHeight+(2*ShoulderLength)/3, 0);
-    MoveArmTo(sBase, sShoulder, sElbow, sWrist, 512, 256, sDeltaTime, true);
+  g_bIKStatus = doArmIK(true, 0, (2*ElbowLength)/3+WristLength, BaseHeight+(2*ShoulderLength)/3, 0);
+  MoveArmTo(sBase, sShoulder, sElbow, sWrist, 512, 256, sDeltaTime, true);
 }
 
 //===================================================================================================
@@ -401,9 +567,9 @@ void MoveArmTo(int sBase, int sShoulder, int sElbow, int sWrist, int sWristRot, 
   g_sGrip = sGrip;
 
   // Now start the move - But first make sure we don't move too fast.  
-//  if (((long)sMaxDelta*wTime/1000L) > MAX_SERVO_DELTA_PERSEC) {
-//    wTime = ((long)sMaxDelta*1000L)/ MAX_SERVO_DELTA_PERSEC;
-//  }
+  //  if (((long)sMaxDelta*wTime/1000L) > MAX_SERVO_DELTA_PERSEC) {
+  //    wTime = ((long)sMaxDelta*1000L)/ MAX_SERVO_DELTA_PERSEC;
+  //  }
 
   bioloid.interpolateSetup(wTime);
 
@@ -615,35 +781,21 @@ void MSound(byte cNotes, ...)
 #endif
 
 
-//g_sIKX, etc global variables are the old previous value. changing to "local"
-//
-//void LCD(){
-//    lcd.setCursor(0, 0);    
-//    lcd.print(g_sIKX);    
-//    lcd.setCursor(4, 0);    
-//    lcd.print(g_sIKY);      
-//    lcd.setCursor(8, 0);    
-//    lcd.print(g_sIKZ);    
-//    lcd.setCursor(12, 0);    
-//    lcd.print(g_sIKGA);
-//    lcd.setCursor(0, 1);    
-//    lcd.print(g_sWristRot);    
-//    lcd.setCursor(4, 1);    
-//    lcd.print(g_sGrip); 
-//}
-
 
 void LCD(int IKX, int IKY, int IKZ, int IKGA, int WristRot, int Gripper){
-    lcd.setCursor(0, 0);    
-    lcd.print(IKX);    
-    lcd.setCursor(4, 0);    
-    lcd.print(IKY);      
-    lcd.setCursor(8, 0);    
-    lcd.print(IKZ);    
-    lcd.setCursor(12, 0);    
-    lcd.print(IKGA);
-    lcd.setCursor(0, 1);    
-    lcd.print(WristRot);    
-    lcd.setCursor(8, 1);    
-    lcd.print(Gripper); 
+  //    lcd.setCursor(0, 0);    
+  //    lcd.print(IKX);    
+  //    lcd.setCursor(4, 0);    
+  //    lcd.print(IKY);      
+  //    lcd.setCursor(8, 0);    
+  //    lcd.print(IKZ);    
+  //    lcd.setCursor(12, 0);    
+  //    lcd.print(IKGA);
+  //    lcd.setCursor(0, 1);    
+  //    lcd.print(WristRot);    
+  //    lcd.setCursor(8, 1);    
+  //    lcd.print(Gripper); 
 }
+
+
+
