@@ -194,6 +194,7 @@ void setup() {
   pinMode(0,OUTPUT);  
   // Lets initialize the Commander
   Serial.begin(38400);
+  delay(1000);
   //  lcd.init();        
   //  lcd.backlight();
   //  lcd.print("Reactor Online.");  
@@ -205,6 +206,7 @@ void setup() {
   bioloid.poseSize = CNT_SERVOS;
 
   // Read in the current positions...
+  delay(100);
   bioloid.readPose();
   delay(100);
 
@@ -504,6 +506,7 @@ void MoveArmTo(int sBase, int sShoulder, int sElbow, int sWrist, int sWristRot, 
     for(uint8_t i=1; i <= CNT_SERVOS; i++) {
       TorqueOn(i);
     }
+    delay(100);
     bioloid.readPose();
   }
 
@@ -679,7 +682,7 @@ uint8_t doArmIK(boolean fCartesian, int sIKX, int sIKY, int sIKZ, int sIKGA)
   sShoulder = min(max(512 - sol1, SHOULDER_MIN), SHOULDER_MAX);
 
   // Magic Number 819???
-  sElbow = min(max(819 - sol2, SHOULDER_MIN), SHOULDER_MAX);
+  sElbow = min(max(819 - sol2, ELBOW_MIN), ELBOW_MAX);
 
 #define Wrist_Offset 512
   sWrist = min(max(Wrist_Offset + sol3, WRIST_MIN), WRIST_MAX);
